@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#1a4fa8" />
+<title>英検1級 単語マスター</title>
+<script src="eiken1_words.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.10/babel.min.js" crossorigin></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div style="font-family:sans-serif;text-align:center;padding:60px 20px;color:#999;">
+    読み込み中…<br><br>
+    <span style="font-size:13px;">（初回起動時はインターネット接続が必要です）</span>
+  </div>
+</div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useMemo, useEffect, useCallback } = React;
+
+// ===== データは eiken1_words.js から読み込み =====
+const WORDS = typeof EIKEN1_WORDS !== "undefined" ? EIKEN1_WORDS : [];
+
+const POS_LIST = ["すべて", "動詞", "名詞", "形容詞", "副詞"];
+
+const SECTIONS = [
+  { key:"all", label:"全部（700語）",           range:[1,700] },
+  { key:"s1",  label:"Section 1（0001〜0100）", range:[1,100] },
+  { key:"s2",  label:"Section 2（0101〜0200）", range:[101,200] },
+  { key:"s3",  label:"Section 3（0201〜0300）", range:[201,300] },
+  { key:"s4",  label:"Section 4（0301〜0400）", range:[301,400] },
+  { key:"s5",  label:"Section 5（0401〜0500）", range:[401,500] },
+  { key:"s6",  label:"Section 6（0501〜0600）", range:[501,600] },
+  { key:"s7",  label:"Section 7（0601〜0700）", range:[601,700] },
+];
+
+// ===== 学習進捗はlocalStorageに保存 =====
+const STORAGE_KEY = "eiken1_vocab_progress_v2";
+function loadProgress() {
+  try { const r = window.localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : {}; }
+  catch(e) { return {}; }
+}
+
+// ===== シャッフル =====
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ===== クイズ生成 =====
+function buildQuiz(words, len, mode) {
+  const picked = shuffle(words).slice(0, Math.min(len, words.length));
+  return picked.map((w) => {
+    const samePos = WORDS.filter(x => x.pos === w.pos && x.id !== w.id);
+    const pool = samePos.length >= 3 ? samePos : WORDS.filter(x => x.id !== w.id);
+    const distractors = shuffle(pool).slice(0, 3);
+    const options = shuffle([w, ...distractors]).map(o => ({
+      id: o.id,
+      label: mode === "e2j" ? o.meaning : o.word,
+    }));
+    return {
+      id: w.id,
+      prompt: mode === "e2j" ? w.word : w.meaning,
+      sub: mode === "e2j" ? `[${w.phonetic}]  ${w.pos}` : w.pos,
+      answerId: w.id,
+      options,
+      word: w,
+    };
+  });
+}
+
+// ============================================================
+//  App
+// ============================================================
+function App() {
+  const [screen, setScreen] = useState("home");
+  const [progress, setProgress] = useState(loadProgress);
+  const [sectionKey, setSectionKey] = useState("all");
+  const [posFilter, setPosFilter] = useState("すべて");
+  const [quizResult, setQuizResult] = useState(null);
+  const [quizPool, setQuizPool] = useState([]);
+  const [quizMode, setQuizMode] = useState("e2j");
+  const [quizLen, setQuizLen] = useState(20);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(progress)); }
+    catch(e) {}
+  }, [progress]);
+
+  const filteredWords = useMemo(() => {
+    const sec = SECTIONS.find(s => s.key === sectionKey);
+    return WORDS.filter(w => {
+      const num = parseInt(w.id, 10);
+      return num >= sec.range[0] && num <= sec.range[1] &&
+             (posFilter === "すべて" || w.pos === posFilter);
+    });
+  }, [sectionKey, posFilter]);
+
+  const stats = useMemo(() => {
+    let known = 0, learning = 0;
+    WORDS.forEach(w => {
+      if (progress[w.id] === "known") known++;
+      else if (progress[w.id] === "learning") learning++;
+    });
+    return { known, learning, total: WORDS.length };
+  }, [progress]);
+
+  const setWordStatus = (id, status) =>
+    setProgress(p => ({ ...p, [id]: status }));
+
+  return (
+    <div style={S.app}>
+      <style>{globalCss}</style>
+      <Header stats={stats} onHome={() => setScreen("home")} />
+      <main style={S.main}>
+        {screen === "home" && (
+          <Home
+            stats={stats} filteredWords={filteredWords}
+            sectionKey={sectionKey} setSectionKey={setSectionKey}
+            posFilter={posFilter} setPosFilter={setPosFilter}
+            onStudy={() => setScreen("study")}
+            onQuiz={() => setScreen("quizSetup")}
+            onReset={() => {
+              if (confirm("学習進捗をすべてリセットします。よろしいですか？"))
+                setProgress({});
+            }}
+          />
+        )}
+        {screen === "study" && (
+          <Study words={filteredWords} progress={progress}
+            setWordStatus={setWordStatus} onBack={() => setScreen("home")} />
+        )}
+        {screen === "quizSetup" && (
+          <QuizSetup count={filteredWords.length}
+            quizMode={quizMode} setQuizMode={setQuizMode}
+            quizLen={quizLen} setQuizLen={setQuizLen}
+            onStart={() => {
+              setQuizPool(buildQuiz(filteredWords, quizLen, quizMode));
+              setScreen("quiz");
+            }}
+            onBack={() => setScreen("home")} />
+        )}
+        {screen === "quiz" && (
+          <Quiz pool={quizPool} mode={quizMode}
+            setWordStatus={setWordStatus}
+            onFinish={r => { setQuizResult(r); setScreen("quizResult"); }}
+            onBack={() => setScreen("home")} />
+        )}
+        {screen === "quizResult" && (
+          <QuizResult result={quizResult}
+            onRetry={() => {
+              setQuizPool(buildQuiz(filteredWords, quizLen, quizMode));
+              setScreen("quiz");
+            }}
+            onReviewWrong={() => {
+              const wrongIds = new Set(quizResult.wrong.map(w => w.id));
+              setQuizPool(buildQuiz(WORDS.filter(w => wrongIds.has(w.id)), quizResult.wrong.length, quizMode));
+              setScreen("quiz");
+            }}
+            onHome={() => setScreen("home")} />
+        )}
+      </main>
+      <Footer />
+    </div>
+  );
+}
+
+// ============================================================
+//  Header
+// ============================================================
+function Header({ stats, onHome }) {
+  const pct = stats.total ? Math.round((stats.known / stats.total) * 100) : 0;
+  return (
+    <header style={S.header}>
+      <div style={S.headerInner}>
+        <button onClick={onHome} style={S.logoBtn} aria-label="ホームへ">
+          <span style={S.logoMark}>英</span>
+          <span style={S.logoText}>
+            英検1級 単語マスター
+            <span style={S.logoSub}>でる順A・全700語</span>
+          </span>
+        </button>
+        <div style={S.headerStat}>
+          <div style={S.headerStatNum}>
+            {stats.known}<span style={S.slash}>/{stats.total}</span>
+          </div>
+          <div style={S.headerBar}>
+            <div style={{ ...S.headerBarFill, width: pct + "%" }} />
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+// ============================================================
+//  Home
+// ============================================================
+function Home({ stats, filteredWords, sectionKey, setSectionKey, posFilter, setPosFilter, onStudy, onQuiz, onReset }) {
+  const pct = stats.total ? Math.round((stats.known / stats.total) * 100) : 0;
+  const count = filteredWords.length;
+
+  // セクション別習得率
+  const secStats = useMemo(() => SECTIONS.slice(1).map(s => {
+    const ws = WORDS.filter(w => { const n = parseInt(w.id); return n >= s.range[0] && n <= s.range[1]; });
+    const k = ws.filter(w => true).length;
+    const kn = ws.filter(w => false).length;
+    return { key: s.key, label: s.label.replace(/（.*）/,''), total: ws.length };
+  }), []);
+
+  return (
+    <div className="fade-in">
+      {/* ヒーロー */}
+      <section style={S.hero}>
+        <div style={S.heroRing}>
+          <svg viewBox="0 0 120 120" style={{ width:132, height:132 }}>
+            <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,.25)" strokeWidth="10"/>
+            <circle cx="60" cy="60" r="52" fill="none" stroke="#fff" strokeWidth="10"
+              strokeLinecap="round"
+              strokeDasharray={2*Math.PI*52}
+              strokeDashoffset={2*Math.PI*52*(1-pct/100)}
+              transform="rotate(-90 60 60)"
+              style={{ transition:"stroke-dashoffset .7s ease" }}
+            />
+          </svg>
+          <div style={S.heroRingText}>
+            <div style={S.heroPct}>{pct}<span style={{fontSize:18}}>%</span></div>
+            <div style={S.heroPctLabel}>習得済み</div>
+          </div>
+        </div>
+        <div style={S.heroInfo}>
+          <h1 style={S.heroTitle}>英検1級合格を{"\n"}目指して！</h1>
+          <div style={S.heroChips}>
+            <span style={S.chipKnown}>✓ 習得済 {stats.known}</span>
+            <span style={S.chipLearn}>学習中 {stats.learning}</span>
+            <span style={S.chipRest}>未学習 {stats.total - stats.known - stats.learning}</span>
+          </div>
+        </div>
+      </section>
+
+      {/* 範囲設定 */}
+      <section style={S.card}>
+        <h2 style={S.cardTitle}>📚 学習範囲を選ぶ</h2>
+        <div style={S.segLabel}>セクション</div>
+        <div style={S.segGroup}>
+          {SECTIONS.map(s => (
+            <button key={s.key}
+              onClick={() => setSectionKey(s.key)}
+              style={sectionKey===s.key ? S.segOn : S.segOff}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div style={{...S.segLabel, marginTop:18}}>品詞で絞り込む</div>
+        <div style={S.segWrap}>
+          {POS_LIST.map(p => (
+            <button key={p} onClick={() => setPosFilter(p)}
+              style={posFilter===p ? S.pillOn : S.pillOff}>
+              {p}
+            </button>
+          ))}
+        </div>
+        <div style={S.countNote}>対象単語：<b style={{color:C.blue}}>{count}語</b></div>
+      </section>
+
+      {/* アクション */}
+      <section style={S.actionGrid}>
+        <button onClick={onStudy}
+          style={{...S.bigAction, background:"linear-gradient(135deg,#5a9cf8,#1a4fa8)"}}
+          disabled={count===0}>
+          <span style={S.bigActionIcon}>🃏</span>
+          <span style={S.bigActionTitle}>カード学習</span>
+          <span style={S.bigActionDesc}>意味・発音・補足をチェック</span>
+        </button>
+        <button onClick={onQuiz}
+          style={{...S.bigAction, background:"linear-gradient(135deg,#3aa9a0,#1f7d76)"}}
+          disabled={count===0}>
+          <span style={S.bigActionIcon}>📝</span>
+          <span style={S.bigActionTitle}>確認テスト</span>
+          <span style={S.bigActionDesc}>4択問題で実力チェック</span>
+        </button>
+      </section>
+
+      <button onClick={onReset} style={S.resetBtn}>進捗をリセット</button>
+    </div>
+  );
+}
+
+// ============================================================
+//  Study（フリップカード）
+// ============================================================
+function Study({ words, progress, setWordStatus, onBack }) {
+  const [i, setI] = useState(0);
+  const [flipped, setFlipped] = useState(false);
+  const [order] = useState(() => shuffle(words));
+  const w = order[i];
+
+  if (!w) return (
+    <div className="fade-in" style={{textAlign:"center",padding:"60px 20px"}}>
+      <div style={{fontSize:48}}>🎉</div>
+      <div style={{fontSize:20,fontWeight:800,margin:"16px 0"}}>このセクション完了！</div>
+      <button onClick={onBack} style={S.startBtn}>ホームに戻る</button>
+    </div>
+  );
+
+  const status = progress[w.id];
+
+  const go = (dir) => {
+    setFlipped(false);
+    setTimeout(() => {
+      setI(v => Math.max(0, Math.min(order.length - 1, v + dir)));
+    }, 120);
+  };
+
+  const mark = (st) => {
+    setWordStatus(w.id, st);
+    if (i < order.length - 1) go(1);
+  };
+
+  const knownCount = order.filter(x => progress[x.id]==="known").length;
+
+  return (
+    <div className="fade-in">
+      <TopBar onBack={onBack} title="カード学習" />
+      <div style={S.progRow}>
+        <span style={S.progText}>{i+1} / {order.length}</span>
+        <div style={S.progBar}>
+          <div style={{...S.progBarFill, width:((i+1)/order.length)*100+"%"}} />
+        </div>
+        <span style={S.progText}>✓{knownCount}</span>
+      </div>
+
+      <div style={S.cardScene} onClick={() => setFlipped(f => !f)}>
+        <div style={{...S.flipCard, transform:flipped?"rotateY(180deg)":"none"}}>
+          {/* 表：英語 */}
+          <div style={S.faceFront}>
+            <span style={S.posTag}>{w.pos}</span>
+            <div style={S.cardWord}>{w.word}</div>
+            <div style={S.cardPhon}>[{w.phonetic}]</div>
+            <div style={S.cardId}>No. {w.id}</div>
+            {status && (
+              <span style={status==="known" ? S.badgeKnown : S.badgeLearn}>
+                {status==="known" ? "✓ 習得済み" : "学習中"}
+              </span>
+            )}
+            <div style={S.tapHint}>タップして意味を確認 👆</div>
+          </div>
+          {/* 裏：意味 */}
+          <div style={S.faceBack}>
+            <span style={S.posTagBack}>{w.pos}</span>
+            <div style={S.backMeaning}>{w.meaning}</div>
+            {w.note && (
+              <div style={S.backNote}>
+                <span style={{fontWeight:700,color:C.blue}}>📌 </span>{w.note}
+              </div>
+            )}
+            <div style={S.backWordSmall}>{w.word} [{w.phonetic}]</div>
+            <div style={S.tapHint}>タップして英語に戻る 👆</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={S.studyBtnRow}>
+        <button onClick={() => mark("learning")} style={S.btnLearn}>🔁 もう一度</button>
+        <button onClick={() => mark("known")} style={S.btnKnown}>✓ 習得した！</button>
+      </div>
+      <div style={S.navRow}>
+        <button onClick={() => go(-1)} style={S.navBtn} disabled={i===0}>← 前へ</button>
+        <button onClick={() => go(1)} style={S.navBtn} disabled={i===order.length-1}>次へ →</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+//  QuizSetup
+// ============================================================
+function QuizSetup({ count, quizMode, setQuizMode, quizLen, setQuizLen, onStart, onBack }) {
+  const lengths = [...new Set([10, 20, 30, Math.min(50, count)].filter(l => l <= count && l > 0))];
+  return (
+    <div className="fade-in">
+      <TopBar onBack={onBack} title="テスト設定" />
+      <section style={S.card}>
+        <h2 style={S.cardTitle}>出題形式</h2>
+        <div style={S.segGroup}>
+          <button onClick={() => setQuizMode("e2j")}
+            style={quizMode==="e2j" ? S.segOn : S.segOff}>
+            英語 → 日本語の意味
+          </button>
+          <button onClick={() => setQuizMode("j2e")}
+            style={quizMode==="j2e" ? S.segOn : S.segOff}>
+            日本語の意味 → 英語
+          </button>
+        </div>
+        <h2 style={{...S.cardTitle, marginTop:22}}>問題数（対象 {count}語）</h2>
+        <div style={S.segWrap}>
+          {lengths.map(l => (
+            <button key={l} onClick={() => setQuizLen(l)}
+              style={quizLen===l ? S.pillOn : S.pillOff}>
+              {l}問
+            </button>
+          ))}
+        </div>
+      </section>
+      <button onClick={onStart} style={S.startBtn} disabled={count===0}>
+        テスト開始 →
+      </button>
+    </div>
+  );
+}
+
+// ============================================================
+//  Quiz
+// ============================================================
+function Quiz({ pool, mode, setWordStatus, onFinish, onBack }) {
+  const [i, setI] = useState(0);
+  const [picked, setPicked] = useState(null);
+  const [correctCount, setCorrectCount] = useState(0);
+  const [wrong, setWrong] = useState([]);
+
+  const q = pool[i];
+  if (!q) return null;
+
+  const choose = (optId) => {
+    if (picked) return;
+    setPicked(optId);
+    const ok = optId === q.answerId;
+    if (ok) {
+      setCorrectCount(c => c+1);
+      setWordStatus(q.word.id, "known");
+    } else {
+      setWrong(a => [...a, q.word]);
+      setWordStatus(q.word.id, "learning");
+    }
+  };
+
+  const advance = () => {
+    if (i < pool.length - 1) {
+      setI(i+1);
+      setPicked(null);
+    } else {
+      onFinish({ total: pool.length, correct: correctCount + (picked===q.answerId ? 0 : 0), wrong });
+    }
+  };
+
+  // correctCount at finish (after last pick)
+  const finalCorrect = picked === q.answerId ? correctCount : correctCount;
+
+  return (
+    <div className="fade-in">
+      <TopBar onBack={onBack} title={`テスト ${i+1} / ${pool.length}`} />
+      <div style={S.progRow}>
+        <div style={S.progBar}>
+          <div style={{...S.progBarFill, width:(i/pool.length)*100+"%", background:C.teal}} />
+        </div>
+        <span style={{...S.progText, color:C.teal}}>✓{correctCount}</span>
+      </div>
+
+      <div style={S.quizPrompt}>
+        <div style={S.quizPromptSub}>{q.sub}</div>
+        <div style={S.quizPromptMain}>{q.prompt}</div>
+        <div style={S.quizQ}>{mode==="e2j" ? "日本語の意味は？" : "英語は？"}</div>
+      </div>
+
+      <div style={S.optGrid}>
+        {q.options.map(o => {
+          let st = S.optBtn;
+          if (picked) {
+            if (o.id===q.answerId) st = S.optCorrect;
+            else if (o.id===picked) st = S.optWrong;
+            else st = S.optDim;
+          }
+          return (
+            <button key={o.id} onClick={() => choose(o.id)} style={st} disabled={!!picked}>
+              {o.label}
+              {picked && o.id===q.answerId && <span style={S.optIcon}>✓</span>}
+              {picked && o.id===picked && o.id!==q.answerId && <span style={S.optIcon}>✕</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {picked && (
+        <div className="fade-in" style={S.quizFeedback}>
+          <div style={picked===q.answerId ? S.fbCorrect : S.fbWrong}>
+            {picked===q.answerId ? "正解！🎉" : "不正解…正解を確認しましょう 👇"}
+          </div>
+          <div style={S.fbCard}>
+            <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+              <b style={{fontSize:22}}>{q.word.word}</b>
+              <span style={{color:"#888",fontSize:14}}>[{q.word.phonetic}]</span>
+              <span style={{...S.posTag,fontSize:11,padding:"2px 8px"}}>{q.word.pos}</span>
+            </div>
+            <div style={{marginTop:6,fontSize:16,fontWeight:700,color:C.blue}}>{q.word.meaning}</div>
+            {q.word.note && <div style={{marginTop:6,fontSize:13,color:"#7a6b80"}}>📌 {q.word.note}</div>}
+          </div>
+          <button onClick={advance} style={S.nextBig}>
+            {i < pool.length-1 ? "次の問題 →" : "結果を見る 🏁"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+//  QuizResult
+// ============================================================
+function QuizResult({ result, onRetry, onReviewWrong, onHome }) {
+  if (!result) return null;
+  const { total, correct, wrong } = result;
+  const pct = Math.round((correct / total) * 100);
+  let msg, emoji;
+  if (pct===100) { msg="パーフェクト！完璧です！"; emoji="🏆"; }
+  else if (pct>=80) { msg="素晴らしい！この調子で続けましょう"; emoji="🌟"; }
+  else if (pct>=60) { msg="良い調子です！もう少しで習得"; emoji="😊"; }
+  else { msg="繰り返し取り組むことで必ず定着します"; emoji="💪"; }
+
+  return (
+    <div className="fade-in">
+      <section style={{...S.card, textAlign:"center", paddingTop:36}}>
+        <div style={{fontSize:56}}>{emoji}</div>
+        <div style={S.resultScore}>{correct}<span style={{fontSize:26,color:"#bbb"}}>/{total}</span></div>
+        <div style={S.resultPct}>正答率 {pct}%</div>
+        <div style={S.resultMsg}>{msg}</div>
+      </section>
+
+      {wrong.length > 0 && (
+        <section style={S.card}>
+          <h2 style={S.cardTitle}>🔁 間違えた単語（{wrong.length}語）</h2>
+          {wrong.map(w => (
+            <div key={w.id} style={S.wrongRow}>
+              <div>
+                <span style={{...S.posTag,fontSize:11,padding:"2px 7px",marginRight:6}}>{w.pos}</span>
+                <b style={{fontSize:17}}>{w.word}</b>
+                <span style={{color:"#999",fontSize:12,marginLeft:6}}>[{w.phonetic}]</span>
+                <div style={{fontSize:14,color:"#555",marginTop:3}}>{w.meaning}</div>
+                {w.note && <div style={{fontSize:12,color:"#999",marginTop:2}}>📌 {w.note}</div>}
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <div style={S.resultBtns}>
+        {wrong.length > 0 && (
+          <button onClick={onReviewWrong}
+            style={{...S.startBtn, background:"linear-gradient(135deg,#ff8a5c,#e85d2f)", margin:"0 0 10px"}}>
+            間違えた{wrong.length}問を再挑戦
+          </button>
+        )}
+        <button onClick={onRetry} style={{...S.startBtn, margin:"0 0 10px"}}>
+          もう一度テスト
+        </button>
+      </div>
+      <button onClick={onHome} style={S.resetBtn}>ホームに戻る</button>
+    </div>
+  );
+}
+
+// ============================================================
+//  共通パーツ
+// ============================================================
+function TopBar({ onBack, title }) {
+  return (
+    <div style={S.topBar}>
+      <button onClick={onBack} style={S.backBtn}>←</button>
+      <span style={S.topTitle}>{title}</span>
+      <span style={{width:40}}/>
+    </div>
+  );
+}
+
+function Footer() {
+  return <footer style={S.footer}>英検1級パス単（でる順A）より・学習用アプリ</footer>;
+}
+
+// ============================================================
+//  スタイル定義
+// ============================================================
+const globalCss = `
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(10px);} to {opacity:1;transform:none;} }
+  .fade-in { animation: fadeIn .35s ease both; }
+  button { font-family: inherit; cursor: pointer; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+`;
+
+const C = {
+  bg:       "#f0f4ff",
+  blue:     "#1a4fa8",
+  blueL:    "#5a9cf8",
+  ink:      "#1a1f33",
+  teal:     "#1f7d76",
+  cream:    "#ffffff",
+  line:     "#dce6f7",
+};
+
+const S = {
+  app: {
+    minHeight: "100vh",
+    background: `radial-gradient(circle at 0% 0%, #ddeaff 0%, ${C.bg} 50%)`,
+    fontFamily: "'Hiragino Sans','Yu Gothic','Meiryo',sans-serif",
+    color: C.ink,
+    paddingBottom: 48,
+  },
+  main: { maxWidth: 560, margin: "0 auto", padding: "16px 16px 0" },
+
+  // ヘッダー
+  header: {
+    position: "sticky", top: 0, zIndex: 20,
+    background: "rgba(240,244,255,.92)", backdropFilter: "blur(8px)",
+    borderBottom: `2px solid ${C.line}`,
+  },
+  headerInner: {
+    maxWidth: 560, margin: "0 auto", padding: "10px 16px",
+    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+  },
+  logoBtn: { display: "flex", alignItems: "center", gap: 10, background: "none", border: "none", padding: 0 },
+  logoMark: {
+    width: 36, height: 36, borderRadius: 10,
+    background: `linear-gradient(135deg,${C.blueL},${C.blue})`,
+    color: "#fff", display: "grid", placeItems: "center",
+    fontWeight: 800, fontSize: 20,
+    boxShadow: "0 3px 8px rgba(26,79,168,.35)",
+  },
+  logoText: { display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.2, fontWeight: 800, fontSize: 16, color: C.ink },
+  logoSub: { fontSize: 10.5, fontWeight: 600, color: C.blue, marginTop: 2 },
+  headerStat: { textAlign: "right", minWidth: 88 },
+  headerStatNum: { fontWeight: 800, fontSize: 18, color: C.blue },
+  slash: { color: "#9aabcf", fontSize: 13, fontWeight: 600 },
+  headerBar: { height: 6, background: "#c8d8f5", borderRadius: 6, marginTop: 3, overflow: "hidden" },
+  headerBarFill: { height: "100%", background: `linear-gradient(90deg,${C.blueL},${C.blue})`, borderRadius: 6, transition: "width .6s ease" },
+
+  // ヒーロー
+  hero: {
+    background: `linear-gradient(135deg,${C.blueL},${C.blue})`,
+    borderRadius: 22, padding: "20px 18px", color: "#fff",
+    display: "flex", gap: 16, alignItems: "center",
+    boxShadow: "0 10px 26px rgba(26,79,168,.3)", marginBottom: 16,
+  },
+  heroRing: { position: "relative", flexShrink: 0, width: 132, height: 132, display: "grid", placeItems: "center" },
+  heroRingText: { position: "absolute", textAlign: "center", lineHeight: 1 },
+  heroPct: { fontSize: 34, fontWeight: 800 },
+  heroPctLabel: { fontSize: 12, fontWeight: 600, marginTop: 4, opacity: .9 },
+  heroInfo: { flex: 1 },
+  heroTitle: { fontSize: 20, fontWeight: 800, margin: "0 0 12px", whiteSpace: "pre-line", lineHeight: 1.4 },
+  heroChips: { display: "flex", flexWrap: "wrap", gap: 6 },
+  chipKnown: { background: "rgba(255,255,255,.95)", color: C.blue, fontWeight: 700, fontSize: 12, padding: "5px 10px", borderRadius: 20 },
+  chipLearn: { background: "rgba(255,255,255,.25)", color: "#fff", fontWeight: 700, fontSize: 12, padding: "5px 10px", borderRadius: 20 },
+  chipRest: { background: "rgba(255,255,255,.15)", color: "#fff", fontWeight: 700, fontSize: 12, padding: "5px 10px", borderRadius: 20 },
+
+  // カード
+  card: { background: C.cream, borderRadius: 18, padding: 18, marginBottom: 16, boxShadow: "0 4px 16px rgba(26,79,168,.08)", border: `1px solid ${C.line}` },
+  cardTitle: { fontSize: 16, fontWeight: 800, margin: "0 0 12px", color: C.ink },
+  segLabel: { fontSize: 12.5, fontWeight: 700, color: "#7a90c0", marginBottom: 8 },
+  segGroup: { display: "flex", flexDirection: "column", gap: 8 },
+  segOn: { padding: "12px 14px", borderRadius: 12, border: `2px solid ${C.blue}`, background: "#eaf0ff", color: C.blue, fontWeight: 800, fontSize: 14.5, textAlign: "left" },
+  segOff: { padding: "12px 14px", borderRadius: 12, border: `2px solid ${C.line}`, background: "#fff", color: "#7a90c0", fontWeight: 700, fontSize: 14.5, textAlign: "left" },
+  segWrap: { display: "flex", flexWrap: "wrap", gap: 8 },
+  pillOn: { padding: "8px 14px", borderRadius: 20, border: `2px solid ${C.blue}`, background: C.blue, color: "#fff", fontWeight: 800, fontSize: 13.5 },
+  pillOff: { padding: "8px 14px", borderRadius: 20, border: `2px solid ${C.line}`, background: "#fff", color: "#7a90c0", fontWeight: 700, fontSize: 13.5 },
+  countNote: { marginTop: 14, fontSize: 14, fontWeight: 600, color: "#5a6a90" },
+
+  // アクション
+  actionGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 },
+  bigAction: { border: "none", borderRadius: 18, padding: "20px 14px", color: "#fff", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, boxShadow: "0 8px 20px rgba(26,79,168,.2)" },
+  bigActionIcon: { fontSize: 34 },
+  bigActionTitle: { fontSize: 16, fontWeight: 800 },
+  bigActionDesc: { fontSize: 11.5, opacity: .9, fontWeight: 600, textAlign: "center" },
+  resetBtn: { display: "block", margin: "8px auto 0", background: "none", border: "none", color: "#9aabcf", fontSize: 13, fontWeight: 600, textDecoration: "underline" },
+
+  // TopBar
+  topBar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
+  backBtn: { width: 40, height: 40, borderRadius: 12, border: `2px solid ${C.line}`, background: "#fff", fontSize: 20, color: C.blue, fontWeight: 800 },
+  topTitle: { fontSize: 16, fontWeight: 800, color: C.ink },
+
+  // プログレスバー
+  progRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14 },
+  progText: { fontSize: 13, fontWeight: 800, color: C.blue, whiteSpace: "nowrap" },
+  progBar: { flex: 1, height: 8, background: "#c8d8f5", borderRadius: 8, overflow: "hidden" },
+  progBarFill: { height: "100%", background: `linear-gradient(90deg,${C.blueL},${C.blue})`, borderRadius: 8, transition: "width .4s ease" },
+
+  // フリップカード
+  cardScene: { perspective: 1200, marginBottom: 16, cursor: "pointer" },
+  flipCard: { position: "relative", width: "100%", minHeight: 300, transformStyle: "preserve-3d", transition: "transform .5s cubic-bezier(.4,.2,.2,1)" },
+  faceFront: {
+    position: "absolute", inset: 0, backfaceVisibility: "hidden",
+    background: "#fff", borderRadius: 20, border: `2px solid ${C.line}`,
+    boxShadow: "0 8px 24px rgba(26,79,168,.1)",
+    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, gap: 8,
+  },
+  faceBack: {
+    position: "absolute", inset: 0, backfaceVisibility: "hidden",
+    transform: "rotateY(180deg)",
+    background: "linear-gradient(160deg,#fff,#eef3ff)", borderRadius: 20,
+    border: `2px solid ${C.blue}`,
+    boxShadow: "0 8px 24px rgba(26,79,168,.15)",
+    display: "flex", flexDirection: "column", justifyContent: "center", padding: 24, gap: 14,
+  },
+  posTag: { background: "#eaf0ff", color: C.blue, fontWeight: 800, fontSize: 12, padding: "4px 12px", borderRadius: 20 },
+  posTagBack: { background: C.blue, color: "#fff", fontWeight: 800, fontSize: 12, padding: "4px 12px", borderRadius: 20, alignSelf: "flex-start" },
+  cardWord: { fontSize: 40, fontWeight: 800, color: C.ink, letterSpacing: .5, textAlign: "center" },
+  cardPhon: { fontSize: 16, color: "#7a90c0", fontWeight: 600 },
+  cardId: { fontSize: 12, color: "#aab8d8", fontWeight: 600 },
+  tapHint: { position: "absolute", bottom: 14, fontSize: 12, color: "#aab8d8", fontWeight: 600 },
+  badgeKnown: { background: C.teal, color: "#fff", fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 14 },
+  badgeLearn: { background: "#f0c44a", color: "#5a4500", fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 14 },
+  backMeaning: { fontSize: 22, fontWeight: 800, color: C.blue, lineHeight: 1.5 },
+  backNote: { fontSize: 13, color: "#5a6a90", background: "#f4f7ff", borderRadius: 10, padding: "10px 12px", lineHeight: 1.6, border: `1px dashed ${C.line}` },
+  backWordSmall: { fontSize: 14, color: "#9aabcf", fontWeight: 600, marginTop: 4 },
+
+  studyBtnRow: { display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 10, marginBottom: 10 },
+  btnLearn: { padding: "15px", borderRadius: 14, border: `2px solid #f0c44a`, background: "#fff8e6", color: "#9a7400", fontWeight: 800, fontSize: 15 },
+  btnKnown: { padding: "15px", borderRadius: 14, border: "none", background: `linear-gradient(135deg,#3aa9a0,${C.teal})`, color: "#fff", fontWeight: 800, fontSize: 16, boxShadow: "0 6px 16px rgba(31,125,118,.3)" },
+  navRow: { display: "flex", gap: 10 },
+  navBtn: { flex: 1, padding: "12px", borderRadius: 12, border: `2px solid ${C.line}`, background: "#fff", color: "#7a90c0", fontWeight: 700, fontSize: 14 },
+
+  // テスト
+  startBtn: { display: "block", width: "100%", padding: "17px", borderRadius: 16, border: "none", background: `linear-gradient(135deg,${C.blueL},${C.blue})`, color: "#fff", fontWeight: 800, fontSize: 17, boxShadow: "0 8px 20px rgba(26,79,168,.3)", margin: "4px 0 12px" },
+
+  quizPrompt: { background: "#fff", borderRadius: 18, border: `2px solid ${C.line}`, padding: "24px 18px", textAlign: "center", marginBottom: 16, boxShadow: "0 6px 18px rgba(26,79,168,.08)" },
+  quizPromptSub: { fontSize: 13, color: "#9aabcf", fontWeight: 600, marginBottom: 8 },
+  quizPromptMain: { fontSize: 28, fontWeight: 800, color: C.ink, lineHeight: 1.4, wordBreak: "break-word" },
+  quizQ: { marginTop: 10, fontSize: 13, color: C.teal, fontWeight: 700 },
+  optGrid: { display: "flex", flexDirection: "column", gap: 10 },
+  optBtn: { padding: "15px 18px", borderRadius: 14, border: `2px solid ${C.line}`, background: "#fff", color: C.ink, fontWeight: 700, fontSize: 15, textAlign: "left", position: "relative", transition: "all .15s", lineHeight: 1.4 },
+  optCorrect: { padding: "15px 18px", borderRadius: 14, border: `2px solid ${C.teal}`, background: "#e6f5f3", color: C.teal, fontWeight: 800, fontSize: 15, textAlign: "left", position: "relative", lineHeight: 1.4 },
+  optWrong: { padding: "15px 18px", borderRadius: 14, border: `2px solid #e0573f`, background: "#fdeae5", color: "#c0432d", fontWeight: 800, fontSize: 15, textAlign: "left", position: "relative", lineHeight: 1.4 },
+  optDim: { padding: "15px 18px", borderRadius: 14, border: `2px solid ${C.line}`, background: "#f6f8ff", color: "#aab8d8", fontWeight: 600, fontSize: 15, textAlign: "left", position: "relative", lineHeight: 1.4 },
+  optIcon: { position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", fontSize: 18, fontWeight: 800 },
+
+  quizFeedback: { marginTop: 16 },
+  fbCorrect: { fontSize: 18, fontWeight: 800, color: C.teal, textAlign: "center", marginBottom: 10 },
+  fbWrong: { fontSize: 18, fontWeight: 800, color: "#c0432d", textAlign: "center", marginBottom: 10 },
+  fbCard: { background: "#fff", borderRadius: 14, border: `1px solid ${C.line}`, padding: "14px 16px", lineHeight: 1.5 },
+  nextBig: { display: "block", width: "100%", marginTop: 14, padding: "16px", borderRadius: 14, border: "none", background: `linear-gradient(135deg,${C.blueL},${C.blue})`, color: "#fff", fontWeight: 800, fontSize: 16, boxShadow: "0 6px 16px rgba(26,79,168,.3)" },
+
+  // 結果
+  resultScore: { fontSize: 52, fontWeight: 800, color: C.blue, marginTop: 8 },
+  resultPct: { fontSize: 17, fontWeight: 700, color: "#7a90c0" },
+  resultMsg: { fontSize: 16, fontWeight: 700, color: C.ink, marginTop: 12 },
+  wrongRow: { padding: "12px 0", borderBottom: `1px solid ${C.line}` },
+  resultBtns: { display: "flex", flexDirection: "column", gap: 0 },
+
+  footer: { textAlign: "center", fontSize: 11.5, color: "#9aabcf", marginTop: 18, padding: "0 16px" },
+};
+
+const rootEl = document.getElementById("root");
+const root = ReactDOM.createRoot(rootEl);
+root.render(<App />);
+</script>
+</body>
+</html>
